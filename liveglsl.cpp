@@ -2,8 +2,10 @@
 #include <vector>
 #include <cassert>
 #include <algorithm>
+#include <string>
 
 #include <raylib.h>
+#include <rlgl.h>
 
 static const char *textFrag = R"(#version 440 core
 
@@ -75,6 +77,8 @@ void ImportStringToEditor(Editor *e, const char *text) {
 	}
 }
 
+int errorLine = 0;
+
 char *EditorToString(Editor *e) {
 	int length = 0;
 	for (const auto &l : e->lines) {
@@ -98,8 +102,11 @@ char *EditorToString(Editor *e) {
 }
 
 int main() {
-	int width = 1280*2, height = 720*2;
+	int width = 1280, height = 720;
+	int oldWidth = 0, oldHeight = 0;
 	InitWindow(width, height, "liveglsl");
+
+	SetWindowState(FLAG_WINDOW_RESIZABLE);
 
 	SetTargetFPS(60);
 
@@ -143,10 +150,62 @@ int main() {
 
 	Vector2 resolution = { width, height };
 
+	SetTraceLogCallback([](int logLevel, const char *text, va_list args)
+		{
+			if (logLevel == LOG_WARNING) {
+				std::string str(text);
+				if (str.find("Compile error: %s") != std::string::npos) {
+					//va_start(args, text);
+					unsigned int s = va_arg(args, unsigned int);
+					char *log = va_arg(args, char *);
+					errorLine = log[2] - '0' - 2;
+				}
+				else {
+					//vprintf(text, args);
+				}
+			}
+		});
+
 	bool showEditor = true;
+	bool error = false;
 	int furthestX = 0;
 	int tmpFurthestX = 0;
+	float backgroundAlpha = 0.6f;
 	while (!WindowShouldClose()) {
+		if (IsWindowResized()) {
+			width = GetRenderWidth();
+			height = GetRenderHeight();
+			resolution.x = width;
+			resolution.y = height;
+		}
+
+		if (IsKeyPressed(KEY_F1)) {
+			int maxWidth = GetMonitorWidth(0);
+			int maxHeight = GetMonitorHeight(0);
+			int currentWidth = GetRenderWidth();
+			int currentHeight = GetRenderHeight();
+			if (maxWidth == currentWidth && maxHeight == currentHeight) {
+				width = oldWidth;
+				height = oldHeight;
+				resolution.x = width;
+				resolution.y = height;
+
+				ToggleFullscreen();
+				SetWindowSize(width, height);
+			}
+			else {
+				oldWidth = width;
+				oldHeight = height;
+				width = maxWidth;
+				height = maxHeight;
+				resolution.x = width;
+				resolution.y = height;
+
+				SetWindowSize(width, height);
+				ToggleFullscreen();
+			}
+		}
+
 		if (IsKeyPressed(KEY_LEFT) && editor.cursorCol > 0) {
 			editor.cursorCol--;
 		}
@@ -154,21 +213,37 @@ int main() {
 			editor.cursorCol++;
 		}
 		if (IsKeyPressed(KEY_UP) && editor.cursorLine > 0) {
-			editor.cursorLine--;
-			editor.cursorCol = editor.lines[editor.cursorLine].items.size();
+			if (IsKeyDown(KEY_RIGHT_CONTROL)) {
+				backgroundAlpha += 0.1f;
+				backgroundAlpha = std::min(1.0f, backgroundAlpha);
+			}
+			else {
+				editor.cursorLine--;
+				editor.cursorCol = editor.lines[editor.cursorLine].items.size();
+			}
 		}
 		if (IsKeyPressed(KEY_DOWN) && editor.cursorLine + 1 < editor.lines.size()) {
-			editor.cursorLine++;
-			editor.cursorCol = editor.lines[editor.cursorLine].items.size();
+			if (IsKeyDown(KEY_RIGHT_CONTROL)) {
+				backgroundAlpha -= 0.1f;
+				backgroundAlpha = std::max(0.0f, backgroundAlpha);
+			}
+			else {
+				editor.cursorLine++;
+				editor.cursorCol = editor.lines[editor.cursorLine].items.size();
+			}
 		}
 		if (IsKeyPressed(KEY_ENTER)) {
 			if (IsKeyDown(KEY_LEFT_ALT)) {
 				char *shaderCode = EditorToString(&editor);
 				Shader tmpShader = LoadShaderFromMemory(nullptr, shaderCode);
-				if (IsShaderReady(tmpShader)) {
+				if (IsShaderReady(tmpShader) && tmpShader.id != rlGetShaderIdDefault()) {
 					liveShader = tmpShader;
 					resolutionLoc = GetShaderLocation(liveShader, "resolution");
 					timeLoc = GetShaderLocation(liveShader, "time");
+					error = false;
+				}
+				else {
+					error = true;
 				}
 				free(shaderCode);
 			} else {
@@ -189,7 +264,7 @@ int main() {
 				l.items.erase(l.items.begin() + editor.cursorCol - 1);
 				editor.cursorCol--;
 			}
-			if (editor.cursorCol == 0 && editor.cursorLine > 0) {
+			else if (editor.cursorCol == 0 && editor.cursorLine > 0) {
 				Line &l = editor.lines[editor.cursorLine];
 				Line &last = editor.lines[editor.cursorLine - 1];
 				int lastSize = last.items.size();
@@ -267,10 +342,21 @@ int main() {
 
 		if (showEditor) {
 			if (furthestX == 0)
-				DrawRectangle(0, 0, tmpFurthestX, height, { 50, 50, 50, 150 });
+				DrawRectangle(0, 0, tmpFurthestX, height, { 50, 50, 50, (unsigned char)(backgroundAlpha*255.0f) });
 			else
-				DrawRectangle(0, 0, furthestX, height, { 50, 50, 50, 150 });
+				DrawRectangle(0, 0, furthestX, height, { 50, 50, 50, (unsigned char)(backgroundAlpha * 255.0f) });
 			tmpFurthestX = furthestX;
+			
+			if (error) {
+				Line &errorL = editor.lines[errorLine];
+				int xLength = 0;
+				for (const auto &c : errorL.items) {
+					GlyphInfo info = GetGlyphInfo(font, (int)c);
+					float scaleFactor = (float)editorFontSize / font.baseSize;
+					xLength += info.advanceX * scaleFactor;
+				}
+				DrawRectangle(0, errorLine * editorFontSize, xLength, editorFontSize, { 255, 0, 0, 150 });
+			}
 
 			BeginShaderMode(textShader);
 			// DrawTextEx(font, initialCode, {0, 0}, textSize, 0, WHITE);
