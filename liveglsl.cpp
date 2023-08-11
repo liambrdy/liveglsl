@@ -1,6 +1,7 @@
 ﻿#include <cstdio>
 #include <vector>
 #include <cassert>
+#include <algorithm>
 
 #include <raylib.h>
 
@@ -102,10 +103,23 @@ int main() {
 
 	SetTargetFPS(60);
 
+	const char *saveName = "shader.frag";
+
+	Shader liveShader = {};
+
 	Editor editor = {};
-	ImportStringToEditor(&editor, initialCode);
+	if (FileExists(saveName)) {
+		char *code = LoadFileText(saveName);
+		ImportStringToEditor(&editor, code);
+		liveShader = LoadShaderFromMemory(nullptr, code);
+		UnloadFileText(code);
+	} else {
+		ImportStringToEditor(&editor, initialCode);
+		liveShader = LoadShaderFromMemory(nullptr, initialCode);
+	}
 
 	int fontSize = 50;
+	int editorFontSize = fontSize;
 
 	unsigned int fileSize = 0;
 	unsigned char *fileData = LoadFileData("..\\..\\..\\Fonts\\AnonymousPro-Regular.ttf", &fileSize);
@@ -124,12 +138,14 @@ int main() {
 
 	int charLength = MeasureText("a", fontSize);
 
-	Shader liveShader = LoadShaderFromMemory(nullptr, initialCode);
 	int resolutionLoc = GetShaderLocation(liveShader, "resolution");
 	int timeLoc = GetShaderLocation(liveShader, "time");
 
 	Vector2 resolution = { width, height };
 
+	bool showEditor = true;
+	int furthestX = 0;
+	int tmpFurthestX = 0;
 	while (!WindowShouldClose()) {
 		if (IsKeyPressed(KEY_LEFT) && editor.cursorCol > 0) {
 			editor.cursorCol--;
@@ -139,11 +155,11 @@ int main() {
 		}
 		if (IsKeyPressed(KEY_UP) && editor.cursorLine > 0) {
 			editor.cursorLine--;
-			editor.cursorCol = 0;
+			editor.cursorCol = editor.lines[editor.cursorLine].items.size();
 		}
-		if (IsKeyPressed(KEY_DOWN)) {
+		if (IsKeyPressed(KEY_DOWN) && editor.cursorLine + 1 < editor.lines.size()) {
 			editor.cursorLine++;
-			editor.cursorCol = 0;
+			editor.cursorCol = editor.lines[editor.cursorLine].items.size();
 		}
 		if (IsKeyPressed(KEY_ENTER)) {
 			if (IsKeyDown(KEY_LEFT_ALT)) {
@@ -157,7 +173,12 @@ int main() {
 				free(shaderCode);
 			} else {
 				Line l = {};
-				editor.lines.insert(editor.lines.begin() + editor.cursorLine, l);
+				Line &last = editor.lines[editor.cursorLine];
+				if (editor.cursorCol < last.items.size()) {
+					l.items.insert(l.items.begin(), last.items.begin() + editor.cursorCol, last.items.end());
+					last.items.erase(last.items.begin() + editor.cursorCol, last.items.end());
+				}
+				editor.lines.insert(editor.lines.begin() + editor.cursorLine + 1, l);
 				editor.cursorLine++;
 				editor.cursorCol = 0;
 			}
@@ -168,17 +189,68 @@ int main() {
 				l.items.erase(l.items.begin() + editor.cursorCol - 1);
 				editor.cursorCol--;
 			}
+			if (editor.cursorCol == 0 && editor.cursorLine > 0) {
+				Line &l = editor.lines[editor.cursorLine];
+				Line &last = editor.lines[editor.cursorLine - 1];
+				int lastSize = last.items.size();
+				if (!l.items.empty()) {
+					last.items.insert(last.items.end(), l.items.begin(), l.items.end());
+				}
+				editor.lines.erase(editor.lines.begin() + editor.cursorLine);
+				editor.cursorLine--;
+				editor.cursorCol = lastSize;
+			}
 		}
 		if (IsKeyPressed(KEY_TAB)) {
-			auto &l = editor.lines[editor.cursorLine];
-			l.items.insert(l.items.begin() + editor.cursorCol, 5, ' ');
-			editor.cursorCol += 5;
+			if (IsKeyDown(KEY_LEFT_CONTROL)) {
+				showEditor = !showEditor;
+			} else {
+				auto &l = editor.lines[editor.cursorLine];
+				l.items.insert(l.items.begin() + editor.cursorCol, 5, ' ');
+				editor.cursorCol += 5;
+			}
+		}
+		if (IsKeyPressed(KEY_S) && IsKeyDown(KEY_LEFT_CONTROL)) {
+			char *shaderCode = EditorToString(&editor);
+			SaveFileData(saveName, (void *)shaderCode, strlen(shaderCode));
+			free(shaderCode);
+		}
+		if (IsKeyPressed(KEY_MINUS) && IsKeyDown(KEY_LEFT_CONTROL)) {
+			editorFontSize -= 5;
+			tmpFurthestX = furthestX;
+			furthestX = 0;
+		}
+		if (IsKeyPressed(KEY_EQUAL) && IsKeyDown(KEY_LEFT_CONTROL)) {
+			editorFontSize += 5;
 		}
 		char chr = (char)GetCharPressed();
 		if (chr != 0) {
 			auto &line = editor.lines[editor.cursorLine];
 			line.items.insert(line.items.begin() + editor.cursorCol, chr);
 			editor.cursorCol++;
+		}
+
+		if (IsMouseButtonPressed(MOUSE_BUTTON_LEFT)) {
+			int x = GetMouseX();
+			int y = GetMouseY();
+
+			int line = (int)floorf((float)y / editorFontSize);
+			line = std::min(line, (int)editor.lines.size() - 1);
+			int col = 0;
+
+			Line &l = editor.lines[line];
+			int currentX = 0;
+			for (const auto &c : l.items) {
+				GlyphInfo info = GetGlyphInfo(font, (int)c);
+				if (currentX + info.advanceX > x) {
+					break;
+				}
+				currentX += info.advanceX;
+				col++;
+			}
+
+			editor.cursorCol = col;
+			editor.cursorLine = line;
 		}
 
 		ClearBackground(DARKGRAY);
@@ -193,33 +265,50 @@ int main() {
 		DrawRectangle(0, 0, width, height, WHITE);
 		EndShaderMode();
 
-		BeginShaderMode(textShader);
-		// DrawTextEx(font, initialCode, {0, 0}, textSize, 0, WHITE);
+		if (showEditor) {
+			if (furthestX == 0)
+				DrawRectangle(0, 0, tmpFurthestX, height, { 50, 50, 50, 150 });
+			else
+				DrawRectangle(0, 0, furthestX, height, { 50, 50, 50, 150 });
+			tmpFurthestX = furthestX;
 
-		for (int i = 0; i < editor.lines.size(); i++) {
-			Line l = editor.lines[i];
-			int x = 0;
-			if (!l.items.empty()) {
-				for (int j = 0; j < l.items.size(); j++) {
-					char c = l.items[j];
-					GlyphInfo info = GetGlyphInfo(font, (int)c);
-					DrawTextCodepoint(font, (int)c, { (float)x, (float)i * fontSize }, fontSize, WHITE);
-					x += info.advanceX;
+			BeginShaderMode(textShader);
+			// DrawTextEx(font, initialCode, {0, 0}, textSize, 0, WHITE);
+
+			for (int i = 0; i < editor.lines.size(); i++) {
+				Line l = editor.lines[i];
+				int x = 0;
+				if (!l.items.empty()) {
+					for (int j = 0; j < l.items.size(); j++) {
+						char c = l.items[j];
+						GlyphInfo info = GetGlyphInfo(font, (int)c);
+						DrawTextCodepoint(font, (int)c, { (float)x, (float)i * editorFontSize }, editorFontSize, WHITE);
+						float scaleFactor = (float)editorFontSize / font.baseSize;
+						x += info.advanceX * scaleFactor;
+						if (x > furthestX) furthestX = x;
+					}
 				}
+				//DrawTextCodepoints(font, (const int *)l.items.data(), l.items.size(), { 0, (float)i * textSize }, textSize, 0, WHITE);
 			}
-			//DrawTextCodepoints(font, (const int *)l.items.data(), l.items.size(), { 0, (float)i * textSize }, textSize, 0, WHITE);
-		}
 
-		EndShaderMode();
-		int cursorPos = 0;
-		Line l = editor.lines[editor.cursorLine];
-		for (int i = 0; i < editor.cursorCol; i++) {
-			char c = l.items[i];
-			GlyphInfo info = GetGlyphInfo(font, (int)c);
-			cursorPos += info.advanceX;
+			int fps = GetFPS();
+			const char *str = TextFormat("FPS: %d", fps);
+			Vector2 fpsMeasure = MeasureTextEx(font, str, editorFontSize, 0);
+			DrawRectangle(width - fpsMeasure.x, 0, fpsMeasure.x, editorFontSize, { 50, 50, 50, 150 });
+			DrawTextEx(font, str, { width - fpsMeasure.x, 0 }, editorFontSize, 0, WHITE);
+
+			EndShaderMode();
+			int cursorPos = 0;
+			Line l = editor.lines[editor.cursorLine];
+			for (int i = 0; i < editor.cursorCol; i++) {
+				char c = l.items[i];
+				GlyphInfo info = GetGlyphInfo(font, (int)c);
+				float scaleFactor = (float)editorFontSize / font.baseSize;
+				cursorPos += info.advanceX * scaleFactor;
+			}
+			Color cursorColor = WHITE;
+			DrawRectangle(cursorPos, editor.cursorLine *editorFontSize, editorFontSize / 4, editorFontSize, cursorColor);
 		}
-		Color cursorColor = WHITE;
-		DrawRectangle(cursorPos, editor.cursorLine * fontSize, fontSize / 4, fontSize, cursorColor);
 		
 		//DrawTexture(font.texture, width - font.texture.width, 0, WHITE);
 
