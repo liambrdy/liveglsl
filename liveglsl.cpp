@@ -1,5 +1,6 @@
 ﻿#include <cstdio>
 #include <vector>
+#include <cassert>
 
 #include <raylib.h>
 
@@ -53,6 +54,7 @@ struct Line {
 
 struct Editor {
 	std::vector<Line> lines;
+	int cursorLine, cursorCol;
 };
 
 void ImportStringToEditor(Editor *e, const char *text) {
@@ -72,8 +74,30 @@ void ImportStringToEditor(Editor *e, const char *text) {
 	}
 }
 
+char *EditorToString(Editor *e) {
+	int length = 0;
+	for (const auto &l : e->lines) {
+		length += l.items.size();
+		length++;
+	}
+
+	char *string = (char *)malloc(length + 1);
+	assert(string);
+	int stringIndex = 0;
+	for (const auto &l : e->lines) {
+		assert(stringIndex < length);
+		for (const auto &c : l.items) {
+			string[stringIndex++] = c;
+		}
+		string[stringIndex++] = '\n';
+	}
+
+	string[stringIndex] = '\0';
+	return string;
+}
+
 int main() {
-	int width = 1280, height = 720;
+	int width = 1280*2, height = 720*2;
 	InitWindow(width, height, "liveglsl");
 
 	SetTargetFPS(60);
@@ -81,16 +105,16 @@ int main() {
 	Editor editor = {};
 	ImportStringToEditor(&editor, initialCode);
 
-	int textSize = 20;
+	int fontSize = 50;
 
 	unsigned int fileSize = 0;
 	unsigned char *fileData = LoadFileData("..\\..\\..\\Fonts\\AnonymousPro-Regular.ttf", &fileSize);
 
 	Font font = { 0 };
-	font.baseSize = textSize;
+	font.baseSize = fontSize;
 	font.glyphCount = 95;
-	font.glyphs = LoadFontData(fileData, fileSize, textSize, 0, 0, FONT_SDF);
-	Image atlas = GenImageFontAtlas(font.glyphs, &font.recs, 95, textSize, 5, 0);
+	font.glyphs = LoadFontData(fileData, fileSize, fontSize, 0, 0, FONT_SDF);
+	Image atlas = GenImageFontAtlas(font.glyphs, &font.recs, 95, fontSize, 5, 0);
 	font.texture = LoadTextureFromImage(atlas);
 	UnloadImage(atlas);
 	UnloadFileData(fileData);
@@ -98,10 +122,7 @@ int main() {
 	Shader textShader = LoadShaderFromMemory(nullptr, textFrag);
 	SetTextureFilter(font.texture, TEXTURE_FILTER_BILINEAR);
 
-	int cursorCol = 0;
-	int cursorRow = 0;
-
-	int charLength = MeasureText("a", textSize);
+	int charLength = MeasureText("a", fontSize);
 
 	Shader liveShader = LoadShaderFromMemory(nullptr, initialCode);
 	int resolutionLoc = GetShaderLocation(liveShader, "resolution");
@@ -110,10 +131,55 @@ int main() {
 	Vector2 resolution = { width, height };
 
 	while (!WindowShouldClose()) {
-		if (IsKeyPressed(KEY_LEFT) && cursorRow > 0) cursorRow--;
-		if (IsKeyPressed(KEY_RIGHT)) cursorRow++;
-		if (IsKeyPressed(KEY_UP) && cursorCol > 0) cursorCol--;
-		if (IsKeyPressed(KEY_DOWN)) cursorCol++;
+		if (IsKeyPressed(KEY_LEFT) && editor.cursorCol > 0) {
+			editor.cursorCol--;
+		}
+		if (IsKeyPressed(KEY_RIGHT) && editor.cursorCol < editor.lines[editor.cursorLine].items.size()) {
+			editor.cursorCol++;
+		}
+		if (IsKeyPressed(KEY_UP) && editor.cursorLine > 0) {
+			editor.cursorLine--;
+			editor.cursorCol = 0;
+		}
+		if (IsKeyPressed(KEY_DOWN)) {
+			editor.cursorLine++;
+			editor.cursorCol = 0;
+		}
+		if (IsKeyPressed(KEY_ENTER)) {
+			if (IsKeyDown(KEY_LEFT_ALT)) {
+				char *shaderCode = EditorToString(&editor);
+				Shader tmpShader = LoadShaderFromMemory(nullptr, shaderCode);
+				if (IsShaderReady(tmpShader)) {
+					liveShader = tmpShader;
+					resolutionLoc = GetShaderLocation(liveShader, "resolution");
+					timeLoc = GetShaderLocation(liveShader, "time");
+				}
+				free(shaderCode);
+			} else {
+				Line l = {};
+				editor.lines.insert(editor.lines.begin() + editor.cursorLine, l);
+				editor.cursorLine++;
+				editor.cursorCol = 0;
+			}
+		}
+		if (IsKeyPressed(KEY_BACKSPACE)) {
+			auto &l = editor.lines[editor.cursorLine];
+			if (editor.cursorCol > 0) {
+				l.items.erase(l.items.begin() + editor.cursorCol - 1);
+				editor.cursorCol--;
+			}
+		}
+		if (IsKeyPressed(KEY_TAB)) {
+			auto &l = editor.lines[editor.cursorLine];
+			l.items.insert(l.items.begin() + editor.cursorCol, 5, ' ');
+			editor.cursorCol += 5;
+		}
+		char chr = (char)GetCharPressed();
+		if (chr != 0) {
+			auto &line = editor.lines[editor.cursorLine];
+			line.items.insert(line.items.begin() + editor.cursorCol, chr);
+			editor.cursorCol++;
+		}
 
 		ClearBackground(DARKGRAY);
 
@@ -132,12 +198,30 @@ int main() {
 
 		for (int i = 0; i < editor.lines.size(); i++) {
 			Line l = editor.lines[i];
-			DrawTextCodepoints(font, (const int *)l.items.data(), l.items.size(), { 0, (float)i * textSize }, textSize, 0, WHITE);
+			int x = 0;
+			if (!l.items.empty()) {
+				for (int j = 0; j < l.items.size(); j++) {
+					char c = l.items[j];
+					GlyphInfo info = GetGlyphInfo(font, (int)c);
+					DrawTextCodepoint(font, (int)c, { (float)x, (float)i * fontSize }, fontSize, WHITE);
+					x += info.advanceX;
+				}
+			}
+			//DrawTextCodepoints(font, (const int *)l.items.data(), l.items.size(), { 0, (float)i * textSize }, textSize, 0, WHITE);
 		}
 
 		EndShaderMode();
-		//DrawRectangle(cursorRow * charLength, cursorCol * textSize, charLength, textSize, GRAY);
-		DrawTexture(font.texture, width - font.texture.width, 0, WHITE);
+		int cursorPos = 0;
+		Line l = editor.lines[editor.cursorLine];
+		for (int i = 0; i < editor.cursorCol; i++) {
+			char c = l.items[i];
+			GlyphInfo info = GetGlyphInfo(font, (int)c);
+			cursorPos += info.advanceX;
+		}
+		Color cursorColor = WHITE;
+		DrawRectangle(cursorPos, editor.cursorLine * fontSize, fontSize / 4, fontSize, cursorColor);
+		
+		//DrawTexture(font.texture, width - font.texture.width, 0, WHITE);
 
 		EndDrawing();
 	}
