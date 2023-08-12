@@ -58,7 +58,16 @@ struct Line {
 struct Editor {
 	std::vector<Line> lines;
 	int cursorLine, cursorCol;
+	int topLine;
+	int linesOnScreen;
 };
+
+struct Error {
+	int line, col;
+	std::string text;
+};
+
+std::vector<Error> errors;
 
 void ImportStringToEditor(Editor *e, const char *text) {
 	int lineBegin = 0;
@@ -76,8 +85,6 @@ void ImportStringToEditor(Editor *e, const char *text) {
 		}
 	}
 }
-
-int errorLine = 0;
 
 char *EditorToString(Editor *e) {
 	int length = 0;
@@ -102,7 +109,7 @@ char *EditorToString(Editor *e) {
 }
 
 int main() {
-	int width = 1280, height = 720;
+	int width = 1280*2, height = 720*2;
 	int oldWidth = 0, oldHeight = 0;
 	InitWindow(width, height, "liveglsl");
 
@@ -149,16 +156,42 @@ int main() {
 	int timeLoc = GetShaderLocation(liveShader, "time");
 
 	Vector2 resolution = { width, height };
+	editor.linesOnScreen = height / editorFontSize;
 
 	SetTraceLogCallback([](int logLevel, const char *text, va_list args)
 		{
+			std::string s(text);
+			s.push_back('\n');
+			vprintf(s.c_str(), args);
 			if (logLevel == LOG_WARNING) {
 				std::string str(text);
 				if (str.find("Compile error: %s") != std::string::npos) {
 					//va_start(args, text);
 					unsigned int s = va_arg(args, unsigned int);
 					char *log = va_arg(args, char *);
-					errorLine = log[2] - '0' - 2;
+					int line = log[9] - '0';
+					int furthest = 10;
+					for (int i = 1; log[9 + i] != ':'; i++) {
+						line *= 10;
+						line += log[9 + i] - '0';
+						furthest++;
+					}
+					line -= 2;
+					bool exists = false;
+					for (const auto &e : errors) {
+						if (e.line == line) {
+							exists = true;
+							break;
+						}
+					}
+					if (!exists) {
+						printf("Error on line %d\n", line);
+						Error e = {};
+						e.line = line;
+						e.col = 0;
+						e.text = std::string(log + furthest);
+						errors.push_back(e);
+					}
 				}
 				else {
 					//vprintf(text, args);
@@ -220,6 +253,9 @@ int main() {
 			else {
 				editor.cursorLine--;
 				editor.cursorCol = editor.lines[editor.cursorLine].items.size();
+				if (editor.cursorLine < editor.topLine) {
+					editor.topLine = editor.cursorLine;
+				}
 			}
 		}
 		if (IsKeyPressed(KEY_DOWN) && editor.cursorLine + 1 < editor.lines.size()) {
@@ -230,20 +266,20 @@ int main() {
 			else {
 				editor.cursorLine++;
 				editor.cursorCol = editor.lines[editor.cursorLine].items.size();
+				if (editor.cursorLine - editor.topLine > editor.linesOnScreen) {
+					editor.topLine++;
+				}
 			}
 		}
 		if (IsKeyPressed(KEY_ENTER)) {
 			if (IsKeyDown(KEY_LEFT_ALT)) {
+				errors.clear();
 				char *shaderCode = EditorToString(&editor);
 				Shader tmpShader = LoadShaderFromMemory(nullptr, shaderCode);
 				if (IsShaderReady(tmpShader) && tmpShader.id != rlGetShaderIdDefault()) {
 					liveShader = tmpShader;
 					resolutionLoc = GetShaderLocation(liveShader, "resolution");
 					timeLoc = GetShaderLocation(liveShader, "time");
-					error = false;
-				}
-				else {
-					error = true;
 				}
 				free(shaderCode);
 			} else {
@@ -294,9 +330,11 @@ int main() {
 			editorFontSize -= 5;
 			tmpFurthestX = furthestX;
 			furthestX = 0;
+			editor.linesOnScreen = height / editorFontSize;
 		}
 		if (IsKeyPressed(KEY_EQUAL) && IsKeyDown(KEY_LEFT_CONTROL)) {
 			editorFontSize += 5;
+			editor.linesOnScreen = height / editorFontSize;
 		}
 		char chr = (char)GetCharPressed();
 		if (chr != 0) {
@@ -309,7 +347,7 @@ int main() {
 			int x = GetMouseX();
 			int y = GetMouseY();
 
-			int line = (int)floorf((float)y / editorFontSize);
+			int line = editor.topLine + (int)floorf((float)y / editorFontSize);
 			line = std::min(line, (int)editor.lines.size() - 1);
 			int col = 0;
 
@@ -320,12 +358,20 @@ int main() {
 				if (currentX + info.advanceX > x) {
 					break;
 				}
-				currentX += info.advanceX;
+				float scaleFactor = (float)editorFontSize / font.baseSize;
+				currentX += info.advanceX * scaleFactor;
 				col++;
 			}
 
 			editor.cursorCol = col;
 			editor.cursorLine = line;
+		}
+
+		Vector2 mouseWheel = GetMouseWheelMoveV();
+		const float EPS = 0.0001f;
+		if (mouseWheel.y < -EPS || EPS < mouseWheel.y) {
+			editor.topLine += (int)mouseWheel.y;
+			editor.topLine = std::max(0, std::min((int)editor.lines.size(), editor.topLine));
 		}
 
 		ClearBackground(DARKGRAY);
@@ -347,28 +393,31 @@ int main() {
 				DrawRectangle(0, 0, furthestX, height, { 50, 50, 50, (unsigned char)(backgroundAlpha * 255.0f) });
 			tmpFurthestX = furthestX;
 			
-			if (error) {
-				Line &errorL = editor.lines[errorLine];
-				int xLength = 0;
-				for (const auto &c : errorL.items) {
-					GlyphInfo info = GetGlyphInfo(font, (int)c);
-					float scaleFactor = (float)editorFontSize / font.baseSize;
-					xLength += info.advanceX * scaleFactor;
+			if (!errors.empty()) {
+				for (const auto &error : errors) {
+					Line &errorL = editor.lines[error.line];
+					int xLength = 0;
+					for (const auto &c : errorL.items) {
+						GlyphInfo info = GetGlyphInfo(font, (int)c);
+						float scaleFactor = (float)editorFontSize / font.baseSize;
+						xLength += info.advanceX * scaleFactor;
+					}
+					DrawRectangle(0, error.line * editorFontSize, xLength, editorFontSize, { 255, 0, 0, 150 });
+					DrawTextEx(font, error.text.c_str(), { (float)xLength + 5, (float)error.line * editorFontSize }, editorFontSize, 0, RED);
 				}
-				DrawRectangle(0, errorLine * editorFontSize, xLength, editorFontSize, { 255, 0, 0, 150 });
 			}
 
 			BeginShaderMode(textShader);
 			// DrawTextEx(font, initialCode, {0, 0}, textSize, 0, WHITE);
 
-			for (int i = 0; i < editor.lines.size(); i++) {
+			for (int i = editor.topLine; i < editor.lines.size(); i++) {
 				Line l = editor.lines[i];
 				int x = 0;
 				if (!l.items.empty()) {
 					for (int j = 0; j < l.items.size(); j++) {
 						char c = l.items[j];
 						GlyphInfo info = GetGlyphInfo(font, (int)c);
-						DrawTextCodepoint(font, (int)c, { (float)x, (float)i * editorFontSize }, editorFontSize, WHITE);
+						DrawTextCodepoint(font, (int)c, { (float)x, (float)(i - editor.topLine) * editorFontSize }, editorFontSize, WHITE);
 						float scaleFactor = (float)editorFontSize / font.baseSize;
 						x += info.advanceX * scaleFactor;
 						if (x > furthestX) furthestX = x;
@@ -393,7 +442,7 @@ int main() {
 				cursorPos += info.advanceX * scaleFactor;
 			}
 			Color cursorColor = WHITE;
-			DrawRectangle(cursorPos, editor.cursorLine *editorFontSize, editorFontSize / 4, editorFontSize, cursorColor);
+			DrawRectangle(cursorPos, (editor.cursorLine - editor.topLine) * editorFontSize, editorFontSize / 4, editorFontSize, cursorColor);
 		}
 		
 		//DrawTexture(font.texture, width - font.texture.width, 0, WHITE);
