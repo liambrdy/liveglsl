@@ -11,3 +11,5 @@ add_subdirectory(deps/raylib)
 add_executable(liveglsl "liveglsl.cpp")
 
 target_link_libraries(liveglsl PUBLIC raylib)
+
+add_executable(fontpacker "fontpacker.cpp")

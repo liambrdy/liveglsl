@@ -7,6 +7,8 @@
 #include <raylib.h>
 #include <rlgl.h>
 
+#include "font.h"
+
 static const char *textFrag = R"(#version 440 core
 
 in vec2 fragTexCoord;
@@ -60,6 +62,7 @@ struct Editor {
 	int cursorLine, cursorCol;
 	int topLine;
 	int linesOnScreen;
+	int currentHighCol;
 };
 
 struct Error {
@@ -135,17 +138,18 @@ int main() {
 	int fontSize = 50;
 	int editorFontSize = fontSize;
 
-	unsigned int fileSize = 0;
-	unsigned char *fileData = LoadFileData("..\\..\\..\\Fonts\\AnonymousPro-Regular.ttf", &fileSize);
+	//unsigned int fileSize = 0;
+	//unsigned char *fileData = LoadFileData("..\\..\\..\\Fonts\\AnonymousPro-Regular.ttf", &fileSize);
 
 	Font font = { 0 };
 	font.baseSize = fontSize;
 	font.glyphCount = 95;
-	font.glyphs = LoadFontData(fileData, fileSize, fontSize, 0, 0, FONT_SDF);
+	//font.glyphs = LoadFontData(fileData, fileSize, fontSize, 0, 0, FONT_SDF);
+	font.glyphs = LoadFontData((const unsigned char *)fontData, fontDataSize, fontSize, 0, 0, FONT_SDF);
 	Image atlas = GenImageFontAtlas(font.glyphs, &font.recs, 95, fontSize, 5, 0);
 	font.texture = LoadTextureFromImage(atlas);
 	UnloadImage(atlas);
-	UnloadFileData(fileData);
+	//UnloadFileData(fileData);
 
 	Shader textShader = LoadShaderFromMemory(nullptr, textFrag);
 	SetTextureFilter(font.texture, TEXTURE_FILTER_BILINEAR);
@@ -241,9 +245,11 @@ int main() {
 
 		if (IsKeyPressed(KEY_LEFT) && editor.cursorCol > 0) {
 			editor.cursorCol--;
+			editor.currentHighCol = editor.cursorCol;
 		}
 		if (IsKeyPressed(KEY_RIGHT) && editor.cursorCol < editor.lines[editor.cursorLine].items.size()) {
 			editor.cursorCol++;
+			editor.currentHighCol = editor.cursorCol;
 		}
 		if (IsKeyPressed(KEY_UP) && editor.cursorLine > 0) {
 			if (IsKeyDown(KEY_RIGHT_CONTROL)) {
@@ -252,7 +258,7 @@ int main() {
 			}
 			else {
 				editor.cursorLine--;
-				editor.cursorCol = editor.lines[editor.cursorLine].items.size();
+				editor.cursorCol = std::min((int)editor.lines[editor.cursorLine].items.size(), std::max(editor.cursorCol, editor.currentHighCol));
 				if (editor.cursorLine < editor.topLine) {
 					editor.topLine = editor.cursorLine;
 				}
@@ -265,7 +271,7 @@ int main() {
 			}
 			else {
 				editor.cursorLine++;
-				editor.cursorCol = editor.lines[editor.cursorLine].items.size();
+				editor.cursorCol = std::min((int)editor.lines[editor.cursorLine].items.size(), std::max(editor.cursorCol, editor.currentHighCol));
 				if (editor.cursorLine - editor.topLine > editor.linesOnScreen) {
 					editor.topLine++;
 				}
@@ -335,6 +341,21 @@ int main() {
 		if (IsKeyPressed(KEY_EQUAL) && IsKeyDown(KEY_LEFT_CONTROL)) {
 			editorFontSize += 5;
 			editor.linesOnScreen = height / editorFontSize;
+		}
+		if (IsKeyPressed(KEY_E) && IsKeyDown(KEY_LEFT_CONTROL)) {
+			editor.cursorCol = editor.lines[editor.cursorLine].items.size();
+		}
+		if (IsKeyPressed(KEY_A) && IsKeyDown(KEY_LEFT_CONTROL)) {
+			Line &l = editor.lines[editor.cursorLine];
+			if (editor.cursorCol == 0) {
+				int tab = 0;
+				while (l.items[tab] == ' ') {
+					tab++;
+				}
+				editor.cursorCol = tab;
+			} else {
+				editor.cursorCol = 0;
+			}
 		}
 		char chr = (char)GetCharPressed();
 		if (chr != 0) {
